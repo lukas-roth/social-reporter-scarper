@@ -10,9 +10,18 @@
         conda activate social-reporter
         ```
     - B: Oder mit Python virtual environment:
+   
+        Windows:
         ```
         python3 -m venv env
-        source env/bin/activate
+        .\env\Scripts\Activate.ps1
+        pip install -r pip-requirements.txt
+        ```
+
+        Linux:
+        ```
+        python3 -m venv env
+        source env/bin/activate 
         pip install -r pip-requirements.txt
         ```
 
