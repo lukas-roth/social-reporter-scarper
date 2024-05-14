@@ -27,4 +27,4 @@
 
 4. Instagram Account in .env Datei hinterlegen.
 5. URLs der zu scrapenden Accounts in scrape.txt anpassen.
-3. Scrape.py ausführen
+3. Scraper.py ausführen
