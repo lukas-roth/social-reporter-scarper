@@ -156,8 +156,6 @@ class InstagramScraper:
                             button.click()
                             break
 
-                    
-
                     self.human_sleep(1, 2)
                 except Exception as e:
                     print(f"Can't move to next post: {e}")
@@ -166,7 +164,6 @@ class InstagramScraper:
             print(f"No posts found!: {e}")
 
     def scrape_post(self, post, index, isCarousel, post_details):
-
         # Get Date
         try:
             time_element = WebDriverWait(post, self.element_timeout).until(
@@ -190,12 +187,13 @@ class InstagramScraper:
             print(f"Post {index} Caption not found")
             post_details['caption'] = None
 
-        # Get Likes
+        # Get Likes 
+
         try:
-            likes = WebDriverWait(self.driver, self.element_timeout).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, 'span.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x1hl2dhg.x16tdsg8.x1vvkbs'))
+            likes = WebDriverWait(post, self.element_timeout).until(
+                EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'likes')]/span[contains(@class, 'xdj266r')]"))
             ).text
-            post_details['likes'] = likes
+            post_details['likes'] = int(likes)
             print(f"Post {index} Likes: {likes}")
         except Exception as e:
             print(f"Post {index} Likes not found!: {e}")
