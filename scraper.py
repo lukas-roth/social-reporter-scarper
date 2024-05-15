@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -5,15 +8,21 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import random
+from selenium.webdriver.common.action_chains import ActionChains
 import time
+import random
+import requests
+import json
 import os
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
+
 class InstagramScraper:
-    def __init__(self, username, password, headless=True):
+    def __init__(self, username, password,element_timeout, headless=True):
         self.username = username
         self.password = password
+        self.element_timeout = element_timeout
 
         # Configure Chrome options
         options = Options()
@@ -33,10 +42,32 @@ class InstagramScraper:
         """Sleep for a random duration between min and max seconds."""
         time.sleep(random.uniform(min_seconds, max_seconds))
 
+    def scroll_page(self):
+        """Scrolls the page up and down randomly to mimic human reading behavior."""
+        current_scroll_position, new_position = 0, 0
+        scroll_attempts = 0
+        while scroll_attempts < 3:
+            # Calculate how far to scroll
+            max_scroll = int(self.driver.execute_script("return document.body.scrollHeight") / random.uniform(1, 4))
+            scroll_distance = random.randint(-max_scroll, max_scroll)
+            
+            # Scroll the page
+            new_position = current_scroll_position + scroll_distance
+            if new_position < 0:
+                new_position = 0
+            elif new_position > self.driver.execute_script("return document.body.scrollHeight"):
+                new_position = self.driver.execute_script("return document.body.scrollHeight")
+            
+            self.driver.execute_script(f"window.scrollTo(0, {new_position});")
+            self.human_sleep(1, 3)  # wait for a bit between scrolls
+
+            current_scroll_position = new_position
+            scroll_attempts += 1
+
     def login(self):
         """Log in to Instagram with provided credentials."""
         self.driver.get("https://www.instagram.com/accounts/login/")
-        self.human_sleep(2, 5)
+        self.human_sleep(2, 3)
 
         # Accept cookies if the popup is visible
         try:
@@ -57,41 +88,203 @@ class InstagramScraper:
         password_field.send_keys(self.password)
         self.human_sleep(1, 3)
         login_button.click()
+        self.human_sleep(6, 10)
+
+    def scrape_profile(self, profile_url, max_post_count):
+        """Scrape up to `max_post_count` posts from a specific profile URL."""
+        profile = urlparse(profile_url).path.strip('/').split('/')[0]
+        print(f'Trying to scrape at most {max_post_count} posts for {profile}...')
+
+        self.driver.get(profile_url)
+        self.scroll_page() 
         self.human_sleep(3, 6)
 
-    def scrape_profile(self, profile_url, post_count):
-        """Scrape up to `post_count` posts from a specific profile URL."""
-        self.driver.get(profile_url)
-        self.human_sleep(3, 6)
-        posts = self.driver.find_elements(By.CLASS_NAME, '_aagw')
-        for index, post in enumerate(posts):
-            if index >= post_count:
-                break
+        # Get profile follower count
+        follower_count=self.driver.find_element(By.CSS_SELECTOR, 'span.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x1hl2dhg.x16tdsg8.x1vvkbs').text
+        print(f"{profile} has {follower_count} followers.")
+
+        try:
+            # Find first post
+            loaded_posts = self.driver.find_elements(By.CLASS_NAME, '_aagw')
+            post = loaded_posts[0]
+            print('Opening first post...')
             post.click()
-            self.human_sleep(2, 4)
-            try:
-                image = WebDriverWait(self.driver, 10).until(
-                    EC.visibility_of_element_located((By.XPATH, '//img[@class="css-9pa8cd efnq0gx0"]'))
+            self.human_sleep(1,3)
+            
+            
+            for index in range(max_post_count):
+                post_details = {'account': profile}
+                post_details['follower_count'] = follower_count #Todo: Conver to int? Currently something like "9.1k"
+                isCarousel = False
+
+                try:
+                    print('Trying carousel or video post...')
+                    current_post = WebDriverWait(self.driver, self.element_timeout).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'article._aatb._aate._aatg._aath._aati'))
+                    ) 
+                except Exception as e:
+                    print(f"Carousel post element not found!")
+                    try:
+                        print('Trying single image post...')
+                        current_post = WebDriverWait(self.driver, self.element_timeout).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 'a.x1i10hfl.xjbqb8w.x1ejq31n.xd10rxx.x1sy0etr.x17r0tee.x972fbf.xcfux6l.x1qhh985.xm0m39n.x9f619.x1ypdohk.xt0psk2.xe8uvvx.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x16tdsg8.x1hl2dhg.xggy1nq.x1a2a7pz._a6hd'))
+                        ) 
+                    except Exception as e:
+                        print(f"Image post element not found!")
+
+                # Check if there is a button with the label "Next" 
+                try:
+                    if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
+                        isCarousel = True
+                        print(f"Carousel post found.")
+                except Exception as e:
+                    print(f"No carousel found.")
+
+                self.scrape_post(current_post, index, isCarousel, post_details)
+
+                try:
+
+                    buttons = self.driver.find_elements(By.CLASS_NAME, "_abl-")
+                    for button in buttons:
+                        if button.accessible_name == "Next":
+                            print("Moving to next post")
+                            button.click()
+                            break
+
+                    
+
+                    self.human_sleep(1, 2)
+                except Exception as e:
+                    print(f"Can't move to next post: {e}")
+                    break
+        except Exception as e:
+            print(f"No posts found!: {e}")
+
+    def scrape_post(self, post, index, isCarousel, post_details):
+
+        # Get Date
+        try:
+            time_element = WebDriverWait(post, self.element_timeout).until(
+                EC.visibility_of_element_located((By.XPATH, '//time[@class="x1p4m5qa"]'))
+            )
+            post_time = time_element.get_attribute('datetime')
+            post_details['time'] = post_time
+            print(f"Post {index} Time: {post_time}")
+        except Exception as e:
+            print(f"Post {index} Time not found: {str(e)}")
+            post_details['time'] = None
+        
+        # Get Caption
+        try:
+            caption = WebDriverWait(post, self.element_timeout).until(
+                EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
+            ).text
+            post_details['caption'] = caption
+            print(f"Post {index} Caption: {caption[:15]}")
+        except Exception:
+            print(f"Post {index} Caption not found")
+            post_details['caption'] = None
+
+        # Get Likes
+        try:
+            likes = WebDriverWait(self.driver, self.element_timeout).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, 'span.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x1hl2dhg.x16tdsg8.x1vvkbs'))
+            ).text
+            post_details['likes'] = likes
+            print(f"Post {index} Likes: {likes}")
+        except Exception as e:
+            print(f"Post {index} Likes not found!: {e}")
+            post_details['likes'] = None
+
+        unique_id = self.driver.current_url.split('/')[-2]
+        image_found = False
+        image_number = 0
+
+        try: 
+            if isCarousel:
+                carousel_content = post.find_element(By.TAG_NAME, 'ul')
+                scraped_urls = []
+                while True: 
+                    img_elements = carousel_content.find_elements(By.TAG_NAME, 'img')
+                    for image in img_elements:
+                        
+                        image_url = image.get_attribute('src')
+                        if not any(image_url in s for s in scraped_urls) :
+                            try:
+                                self.scrape_image(image,image_url, post_details, unique_id, image_number)
+                                scraped_urls.append(image_url)
+                                image_number += 1
+                                image_found = True
+                            except Exception as e:
+                                print(f"Post {index}: Couldn't scrape Image {image_number} in carousel: {str(e)}")
+                        
+                    try:
+                        print('Clicking next')
+                        next_button = post.find_element(By.XPATH, './/button[@aria-label="Next"]')
+                        next_button.click()
+                        self.human_sleep(1,2)  
+                    except Exception as e: 
+                        print(f'No next button found in carousel!')
+                        break       
+            else:
+                # Only single image
+                image = WebDriverWait(post, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'img.x5yr21d.xu96u03.x10l6tqk.x13vifvy.x87ps6o.xh8yej3'))
                 )
                 image_url = image.get_attribute('src')
-                print(f"Post {index + 1} Image URL: {image_url}")
-            except Exception:
-                print(f"Post {index + 1} Image URL not found")
-            try:
-                caption = WebDriverWait(self.driver, 10).until(
-                    EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
-                )
-                print(f"Post {index + 1} Caption: {caption.text}")
-            except Exception:
-                print(f"Post {index + 1} Caption not found")
-            try:
-                close_button = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, '//div[@role="button" and contains(@class, "x1i10hfl")]'))
-                )
-                close_button.click()
-                self.human_sleep(2, 4)
-            except Exception:
-                print(f"Attempt to close Post {index + 1} failed, retrying...")
+                try:
+                    self.scrape_image(image, image_url, post_details, unique_id)
+                    image_found = True
+                except Exception as e:
+                    print(f"Post {index}: Couldn't scrape Image: {str(e)}")
+            
+        except Exception as e:
+            print(f"Problem with image in srcape post: {e}")
+
+
+        if image_found:
+            json_filename = f"{unique_id}.json"
+            with open(json_filename, 'w') as json_file:
+                json.dump(post_details, json_file)
+
+        
+
+
+        
+
+    def scrape_image(self, image,image_url,post_details, unique_id, image_number=None):
+        image_response = requests.get(image_url)
+
+        alt_attribute = image.get_attribute('alt')
+        # Clean up unecessary filler 
+        # Regular expression to find "May be an" and everything before it
+        pattern = r'.*May be an'
+        # Substitute the pattern with an empty string
+        result = re.sub(pattern, '', alt_attribute)
+        result.strip()  # Remove leading/trailing whitespaces
+    
+        if 'picture_contents' in post_details and isinstance(post_details['picture_contents'], list):
+            # Append the alt attribute to the list
+            post_details['picture_contents'].append(result)
+        else:
+            # Initialize 'picture_contents' as a list with the alt attribute
+            post_details['picture_contents'] = [result]
+
+        if 'source_url' in post_details and isinstance(post_details['source_url'], list):
+            # Append the alt attribute to the list
+            post_details['source_url'].append(image_url)
+        else:
+            # Initialize 'picture_contents' as a list with the alt attribute
+            post_details['source_url'] = [image_url]
+        
+
+        
+        if image_number is not None: 
+            image_filename = f"{unique_id}_{image_number}.png"
+        else:
+            image_filename = f"{unique_id}.png"
+        with open(image_filename, 'wb') as f:
+            f.write(image_response.content)
 
     def close(self):
         """Quit the WebDriver."""
@@ -102,10 +295,11 @@ def main():
     load_dotenv()
     username = os.getenv('MY_APP_USERNAME')
     password = os.getenv('MY_APP_PASSWORD')
-    post_count = int(os.getenv('MAX_POSTS_PER_PAGE'))
+    max_post_count = int(os.getenv('MAX_POSTS_PER_PAGE'))
+    element_timeout = int(os.getenv('ELEMENT_TIMEOUT'))
 
     # Instantiate the scraper in Non-Headless mode (to be less suspicious)
-    scraper = InstagramScraper(username, password, False)
+    scraper = InstagramScraper(username, password, element_timeout, False, )
 
     # Log in to Instagram
     scraper.login()
@@ -118,12 +312,10 @@ def main():
     # Scrape each profile
     for url in profile_urls:
         print(f"Scraping profile: {url}")
-        scraper.scrape_profile(url, post_count)
+        scraper.scrape_profile(url, max_post_count)
 
     # Close the WebDriver
     scraper.close()
 
 if __name__ == "__main__":
     main()
-
-
