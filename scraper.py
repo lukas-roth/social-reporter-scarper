@@ -1,5 +1,3 @@
-import base64
-import hashlib
 import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -59,7 +57,7 @@ class InstagramScraper:
                 new_position = self.driver.execute_script("return document.body.scrollHeight")
             
             self.driver.execute_script(f"window.scrollTo(0, {new_position});")
-            self.human_sleep(1, 3)  # wait for a bit between scrolls
+            self.human_sleep(1, 1)  # wait for a bit between scrolls
 
             current_scroll_position = new_position
             scroll_attempts += 1
@@ -100,7 +98,14 @@ class InstagramScraper:
         self.human_sleep(3, 6)
 
         # Get profile follower count
-        follower_count=self.driver.find_element(By.CSS_SELECTOR, 'span.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x1hl2dhg.x16tdsg8.x1vvkbs').text
+        follower_count_candidates=self.driver.find_elements(By.CLASS_NAME, '_ac2a')
+        follower_count = None
+
+        for candidate in follower_count_candidates:
+            if candidate.accessible_name:
+                follower_count = int(candidate.accessible_name.replace(',', ''))
+                
+
         print(f"{profile} has {follower_count} followers.")
 
         try:
