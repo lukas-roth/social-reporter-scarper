@@ -1,4 +1,5 @@
 import re
+import threading
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -14,6 +15,7 @@ import json
 import os
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from upload import upload_files, stop_event
 
 
 class InstagramScraper:
@@ -125,14 +127,14 @@ class InstagramScraper:
                 try:
                     print('Trying carousel or video post...')
                     current_post = WebDriverWait(self.driver, self.element_timeout).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'article._aatb._aate._aatg._aath._aati'))
+                        EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"]]'))
                     ) 
                 except Exception as e:
                     print(f"Carousel post element not found!")
                     try:
                         print('Trying single image post...')
                         current_post = WebDriverWait(self.driver, self.element_timeout).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'a.x1i10hfl.xjbqb8w.x1ejq31n.xd10rxx.x1sy0etr.x17r0tee.x972fbf.xcfux6l.x1qhh985.xm0m39n.x9f619.x1ypdohk.xt0psk2.xe8uvvx.xdj266r.x11i5rnm.xat24cr.x1mh8g0r.xexx8yu.x4uap5.x18d9i69.xkhd6sd.x16tdsg8.x1hl2dhg.xggy1nq.x1a2a7pz._a6hd'))
+                            EC.presence_of_element_located((By.XPATH, '//a[.//textarea[@placeholder="Add a comment…"]]'))
                         ) 
                     except Exception as e:
                         print(f"Image post element not found!")
@@ -162,43 +164,9 @@ class InstagramScraper:
                     break
         except Exception as e:
             print(f"No posts found!: {e}")
+        print(f'Done with scraping {profile}.')
 
     def scrape_post(self, post, index, isCarousel, post_details):
-        # Get Date
-        try:
-            time_element = WebDriverWait(post, self.element_timeout).until(
-                EC.visibility_of_element_located((By.XPATH, '//time[@class="x1p4m5qa"]'))
-            )
-            post_time = time_element.get_attribute('datetime')
-            post_details['time'] = post_time
-            print(f"Post {index} Time: {post_time}")
-        except Exception as e:
-            print(f"Post {index} Time not found: {str(e)}")
-            post_details['time'] = None
-        
-        # Get Caption
-        try:
-            caption = WebDriverWait(post, self.element_timeout).until(
-                EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
-            ).text
-            post_details['caption'] = caption
-            print(f"Post {index} Caption: {caption[:15]}")
-        except Exception:
-            print(f"Post {index} Caption not found")
-            post_details['caption'] = None
-
-        # Get Likes 
-
-        try:
-            likes = WebDriverWait(post, self.element_timeout).until(
-                EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'likes')]/span[contains(@class, 'xdj266r')]"))
-            ).text
-            post_details['likes'] = int(likes)
-            print(f"Post {index} Likes: {likes}")
-        except Exception as e:
-            print(f"Post {index} Likes not found!: {e}")
-            post_details['likes'] = None
-
         unique_id = self.driver.current_url.split('/')[-2]
         image_found = False
         image_number = 0
@@ -239,15 +207,53 @@ class InstagramScraper:
                     self.scrape_image(image, image_url, post_details, unique_id)
                     image_found = True
                 except Exception as e:
-                    print(f"Post {index}: Couldn't scrape Image: {str(e)}")
-            
+                    print(f"Post {index}: Couldn't scrape Image: {str(e)}")  
         except Exception as e:
             print(f"Problem with image in srcape post: {e}")
 
 
         if image_found:
+            # Get Date
+            try:
+                time_element = WebDriverWait(post, self.element_timeout).until(
+                    EC.visibility_of_element_located((By.XPATH, '//time[@class="x1p4m5qa"]'))
+                )
+                post_time = time_element.get_attribute('datetime')
+                post_details['time'] = post_time
+                print(f"Post {index} Time: {post_time}")
+            except Exception as e:
+                print(f"Post {index} Time not found: {str(e)}")
+                post_details['time'] = None
+            
+            # Get Caption
+            try:
+                caption = WebDriverWait(post, self.element_timeout).until(
+                    EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
+                ).text
+                post_details['caption'] = caption
+                print(f"Post {index} Caption: {caption[:15]}")
+            except Exception:
+                print(f"Post {index} Caption not found")
+                post_details['caption'] = None
+
+            # Get Likes 
+            try:
+                likes = WebDriverWait(post, self.element_timeout).until(
+                    EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'likes')]/span[contains(@class, 'xdj266r')]"))
+                ).text
+                post_details['likes'] = int(likes)
+                print(f"Post {index} Likes: {likes}")
+            except Exception as e:
+                print(f"Post {index} Likes not found!: {e}")
+                post_details['likes'] = None
+
+            
+            # Get Comments
+
+            target_folder = './scraped data'
             json_filename = f"{unique_id}.json"
-            with open(json_filename, 'w') as json_file:
+            json_file_path = os.path.join(target_folder, json_filename)
+            with open(json_file_path, 'w') as json_file:
                 json.dump(post_details, json_file)
 
         
@@ -260,8 +266,8 @@ class InstagramScraper:
 
         alt_attribute = image.get_attribute('alt')
         # Clean up unecessary filler 
-        # Regular expression to find "May be an" and everything before it
-        pattern = r'.*May be an'
+        # Regular expression to find "May be" and everything before it
+        pattern = r'.*May be'
         # Substitute the pattern with an empty string
         result = re.sub(pattern, '', alt_attribute)
         result.strip()  # Remove leading/trailing whitespaces
@@ -286,7 +292,10 @@ class InstagramScraper:
             image_filename = f"{unique_id}_{image_number}.png"
         else:
             image_filename = f"{unique_id}.png"
-        with open(image_filename, 'wb') as f:
+
+        target_folder = './scraped data'
+        image_file_path = os.path.join(target_folder, image_filename)
+        with open(image_file_path, 'wb') as f:
             f.write(image_response.content)
 
     def close(self):
@@ -302,7 +311,14 @@ def main():
     element_timeout = int(os.getenv('ELEMENT_TIMEOUT'))
 
     # Instantiate the scraper in Non-Headless mode (to be less suspicious)
+    # Erstelle und starte den Thread
+    
+  # Wartet, bis der Thread beendet ist
     scraper = InstagramScraper(username, password, element_timeout, False, )
+
+
+    upload_thread = threading.Thread(target=upload_files)
+    upload_thread.start()
 
     # Log in to Instagram
     scraper.login()
@@ -319,6 +335,8 @@ def main():
 
     # Close the WebDriver
     scraper.close()
+    stop_event.set()
+    upload_thread.join()
 
 if __name__ == "__main__":
     main()
