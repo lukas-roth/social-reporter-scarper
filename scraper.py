@@ -16,6 +16,7 @@ import os
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from upload import upload_files, stop_event
+import portalocker
 
 
 class InstagramScraper:
@@ -90,7 +91,7 @@ class InstagramScraper:
         login_button.click()
         self.human_sleep(6, 10)
 
-    def scrape_profile(self, profile_url, max_post_count):
+    def scrape_profile(self, profile_url, max_post_count=0):
         """Scrape up to `max_post_count` posts from a specific profile URL."""
         profile = urlparse(profile_url).path.strip('/').split('/')[0]
         print(f'Trying to scrape at most {max_post_count} posts for {profile}...')
@@ -120,35 +121,40 @@ class InstagramScraper:
             
             
             for index in range(max_post_count):
-                post_details = {'account': profile}
-                post_details['follower_count'] = follower_count #Todo: Conver to int? Currently something like "9.1k"
-                isCarousel = False
+                unique_id = self.driver.current_url.split('/')[-2]
+                print(f"Found post_id {unique_id}.")
+                    
+                if not self.is_post_uploaded(unique_id):    
+                    post_details = {'account': profile}
+                    post_details['follower_count'] = follower_count 
+                    isCarousel = False
 
-                try:
-                    print('Trying carousel or video post...')
-                    current_post = WebDriverWait(self.driver, self.element_timeout).until(
-                        EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"]]'))
-                    ) 
-                except Exception as e:
-                    print(f"Carousel post element not found!")
                     try:
-                        print('Trying single image post...')
+                        print('Trying carousel or video post...')
                         current_post = WebDriverWait(self.driver, self.element_timeout).until(
-                            EC.presence_of_element_located((By.XPATH, '//a[.//textarea[@placeholder="Add a comment…"]]'))
+                            EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"]]'))
                         ) 
                     except Exception as e:
-                        print(f"Image post element not found!")
+                        print(f"Carousel post element not found!")
+                        try:
+                            print('Trying single image post...')
+                            current_post = WebDriverWait(self.driver, self.element_timeout).until(
+                                EC.presence_of_element_located((By.XPATH, '//a[.//textarea[@placeholder="Add a comment…"]]'))
+                            ) 
+                        except Exception as e:
+                            print(f"Image post element not found!")
 
-                # Check if there is a button with the label "Next" 
-                try:
-                    if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
-                        isCarousel = True
-                        print(f"Carousel post found.")
-                except Exception as e:
-                    print(f"No carousel found.")
+                    # Check if there is a button with the label "Next" 
+                    try:
+                        if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
+                            isCarousel = True
+                            print(f"Carousel post found.")
+                    except Exception as e:
+                        print(f"No carousel found.")
 
-                self.scrape_post(current_post, index, isCarousel, post_details)
-
+                    self.scrape_post(current_post, unique_id, index, isCarousel, post_details)
+                else:
+                    print(f"Already scraped post: {unique_id}")
                 try:
 
                     buttons = self.driver.find_elements(By.CLASS_NAME, "_abl-")
@@ -166,8 +172,8 @@ class InstagramScraper:
             print(f"No posts found!: {e}")
         print(f'Done with scraping {profile}.')
 
-    def scrape_post(self, post, index, isCarousel, post_details):
-        unique_id = self.driver.current_url.split('/')[-2]
+    def scrape_post(self, post, unique_id, index, isCarousel, post_details):
+        
         image_found = False
         image_number = 0
 
@@ -256,11 +262,6 @@ class InstagramScraper:
             with open(json_file_path, 'w') as json_file:
                 json.dump(post_details, json_file)
 
-        
-
-
-        
-
     def scrape_image(self, image,image_url,post_details, unique_id, image_number=None):
         image_response = requests.get(image_url)
 
@@ -298,6 +299,27 @@ class InstagramScraper:
         with open(image_file_path, 'wb') as f:
             f.write(image_response.content)
 
+    def load_uploaded_posts(self):
+        uploaded_posts_file = 'uploaded_posts.json'
+        if os.path.exists(uploaded_posts_file):
+            with open(uploaded_posts_file, 'r') as f:
+                portalocker.lock(f, portalocker.LOCK_SH)  # Shared lock for reading
+                try:
+                    data = json.load(f)
+                    print(f"Loaded uploaded posts: {data}")
+                    return data
+                finally:
+                    portalocker.unlock(f)
+        else:
+            print(f"{uploaded_posts_file} does not exist.")
+        return {}
+
+    def is_post_uploaded(self, post_id):
+        uploaded_posts = self.load_uploaded_posts()
+        is_uploaded = uploaded_posts.get(post_id, False)
+        print(f"Checking if post {post_id} is uploaded: {is_uploaded}")
+        return is_uploaded
+    
     def close(self):
         """Quit the WebDriver."""
         self.driver.quit()
@@ -326,7 +348,12 @@ def main():
     # Read the list of profile URLs and define the number of posts to scrape
     file_path = 'scrape.txt'
     with open(file_path, 'r') as file:
-        profile_urls = [line.strip() for line in file.readlines() if line.strip()]
+        portalocker.lock(file, portalocker.LOCK_SH)  # Acquire a shared lock
+        try:
+            profile_urls = [line.strip() for line in file.readlines() if line.strip()]
+        finally:
+            portalocker.unlock(file)  # Ensure the lock is released
+        
 
     # Scrape each profile
     for url in profile_urls:
