@@ -17,13 +17,15 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from upload import upload_files, stop_event
 import portalocker
+import logging_config
 
 
 class InstagramScraper:
-    def __init__(self, username, password,element_timeout, headless=True):
+    def __init__(self, username, password, element_timeout, headless=True):
         self.username = username
         self.password = password
         self.element_timeout = element_timeout
+        self.logger = logging_config.get_logger("Scraper")
 
         # Configure Chrome options
         options = Options()
@@ -75,9 +77,9 @@ class InstagramScraper:
             allow_cookies_button = self.driver.find_element(By.XPATH, '//button[@class="_a9-- _ap36 _a9_0"]')
             allow_cookies_button.click()
             self.human_sleep(1, 2)
-            print("Cookies accepted.")
-        except Exception:
-            print("No cookie consent button found or already accepted.")
+            self.logger.info("Cookies accepted.")  
+        except Exception as e:
+            self.logger.error(f"No cookie consent button found or already accepted! {e}")  
 
         # Find login elements and perform login
         username_field = self.driver.find_element(By.NAME, 'username')
@@ -94,35 +96,33 @@ class InstagramScraper:
     def scrape_profile(self, profile_url, max_post_count=0):
         """Scrape up to `max_post_count` posts from a specific profile URL."""
         profile = urlparse(profile_url).path.strip('/').split('/')[0]
-        print(f'Trying to scrape at most {max_post_count} posts for {profile}...')
+        self.logger.info(f'Trying to scrape at most {max_post_count} posts for {profile}.')
 
         self.driver.get(profile_url)
         self.scroll_page() 
         self.human_sleep(3, 6)
 
         # Get profile follower count
-        follower_count_candidates=self.driver.find_elements(By.CLASS_NAME, '_ac2a')
+        follower_count_candidates = self.driver.find_elements(By.CLASS_NAME, '_ac2a')
         follower_count = None
 
         for candidate in follower_count_candidates:
             if candidate.accessible_name:
                 follower_count = int(candidate.accessible_name.replace(',', ''))
-                
 
-        print(f"{profile} has {follower_count} followers.")
+        self.logger.info(f"{profile} has {follower_count} followers.")  
 
         try:
             # Find first post
             loaded_posts = self.driver.find_elements(By.CLASS_NAME, '_aagw')
             post = loaded_posts[0]
-            print('Opening first post...')
+            self.logger.info('Opening first post...')
             post.click()
-            self.human_sleep(1,3)
-            
+            self.human_sleep(1, 3)
             
             for index in range(max_post_count):
                 unique_id = self.driver.current_url.split('/')[-2]
-                print(f"Found post_id {unique_id}.")
+                self.logger.debug(f"Found post_id: {unique_id}.")  
                     
                 if not self.is_post_uploaded(unique_id):    
                     post_details = {'account': profile}
@@ -130,47 +130,45 @@ class InstagramScraper:
                     isCarousel = False
 
                     try:
-                        print('Trying carousel or video post...')
+                        self.logger.debug('Checking if article element is present...')  
                         current_post = WebDriverWait(self.driver, self.element_timeout).until(
                             EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"]]'))
                         ) 
                     except Exception as e:
-                        print(f"Carousel post element not found!")
+                        self.logger.debug(f"No article element found!")  
                         try:
-                            print('Trying single image post...')
+                            self.logger.debug('Checking if <a> element...')  
                             current_post = WebDriverWait(self.driver, self.element_timeout).until(
                                 EC.presence_of_element_located((By.XPATH, '//a[.//textarea[@placeholder="Add a comment…"]]'))
                             ) 
                         except Exception as e:
-                            print(f"Image post element not found!")
+                            self.logger.debug(f"<a> element not found!")  
 
                     # Check if there is a button with the label "Next" 
                     try:
                         if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
                             isCarousel = True
-                            print(f"Carousel post found.")
+                            self.logger.debug(f"Carousel post found.")  
                     except Exception as e:
-                        print(f"No carousel found.")
+                        self.logger.debug(f"No carousel post found.") 
 
                     self.scrape_post(current_post, unique_id, index, isCarousel, post_details)
                 else:
-                    print(f"Already scraped post: {unique_id}")
+                    self.logger.debug(f"Already scraped post: {unique_id}.")  
                 try:
-
                     buttons = self.driver.find_elements(By.CLASS_NAME, "_abl-")
                     for button in buttons:
                         if button.accessible_name == "Next":
-                            print("Moving to next post")
+                            self.logger.info("Moving to next post.")  
                             button.click()
                             break
-
                     self.human_sleep(1, 2)
                 except Exception as e:
-                    print(f"Can't move to next post: {e}")
+                    self.logger.debug(f"Can't move to next post!")  
                     break
         except Exception as e:
-            print(f"No posts found!: {e}")
-        print(f'Done with scraping {profile}.')
+            self.logger.debug(f"No posts found for profile {profile}!")
+        self.logger.info(f'Done with scraping {profile}.')
 
     def scrape_post(self, post, unique_id, index, isCarousel, post_details):
         
@@ -188,20 +186,20 @@ class InstagramScraper:
                         image_url = image.get_attribute('src')
                         if not any(image_url in s for s in scraped_urls) :
                             try:
-                                self.scrape_image(image,image_url, post_details, unique_id, image_number)
+                                self.scrape_image(image, image_url, post_details, unique_id, image_number)
                                 scraped_urls.append(image_url)
                                 image_number += 1
                                 image_found = True
                             except Exception as e:
-                                print(f"Post {index}: Couldn't scrape Image {image_number} in carousel: {str(e)}")
+                                self.logger.warning(f"Post {index}: Couldn't scrape image {image_number} in carousel! {str(e)}")  
                         
                     try:
-                        print('Clicking next')
+                        self.logger.info('Clicking next.')  
                         next_button = post.find_element(By.XPATH, './/button[@aria-label="Next"]')
                         next_button.click()
-                        self.human_sleep(1,2)  
+                        self.human_sleep(1, 2)  
                     except Exception as e: 
-                        print(f'No next button found in carousel!')
+                        self.logger.debug(f'No next button found in carousel!')  
                         break       
             else:
                 # Only single image
@@ -213,9 +211,9 @@ class InstagramScraper:
                     self.scrape_image(image, image_url, post_details, unique_id)
                     image_found = True
                 except Exception as e:
-                    print(f"Post {index}: Couldn't scrape Image: {str(e)}")  
+                    self.logger.warning(f"Couldn't scrape image! {str(e)}")  
         except Exception as e:
-            print(f"Problem with image in srcape post: {e}")
+            self.logger.error(f"Problem with image in post {unique_id}! {str(e)}")  
 
 
         if image_found:
@@ -226,9 +224,9 @@ class InstagramScraper:
                 )
                 post_time = time_element.get_attribute('datetime')
                 post_details['time'] = post_time
-                print(f"Post {index} Time: {post_time}")
+                self.logger.debug(f"Post {index} Time: {post_time}")  
             except Exception as e:
-                print(f"Post {index} Time not found: {str(e)}")
+                self.logger.warning(f"Post {index} Time not found! {str(e)}") 
                 post_details['time'] = None
             
             # Get Caption
@@ -237,9 +235,9 @@ class InstagramScraper:
                     EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
                 ).text
                 post_details['caption'] = caption
-                print(f"Post {index} Caption: {caption[:15]}")
-            except Exception:
-                print(f"Post {index} Caption not found")
+                self.logger.debug(f"Post {index} Caption: {caption[:15]}")  
+            except Exception as e:
+                self.logger.warning(f"Post {index} Caption not found! {str(e)}") 
                 post_details['caption'] = None
 
             # Get Likes 
@@ -248,13 +246,10 @@ class InstagramScraper:
                     EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'likes')]/span[contains(@class, 'xdj266r')]"))
                 ).text
                 post_details['likes'] = int(likes)
-                print(f"Post {index} Likes: {likes}")
+                self.logger.info(f"Post {index}, Likes: {likes}")  
             except Exception as e:
-                print(f"Post {index} Likes not found!: {e}")
+                self.logger.warning(f"Post {index} Likes not found! {e}")  
                 post_details['likes'] = None
-
-            
-            # Get Comments
 
             target_folder = './scraped data'
             json_filename = f"{unique_id}.json"
@@ -262,11 +257,11 @@ class InstagramScraper:
             with open(json_file_path, 'w') as json_file:
                 json.dump(post_details, json_file)
 
-    def scrape_image(self, image,image_url,post_details, unique_id, image_number=None):
+    def scrape_image(self, image, image_url, post_details, unique_id, image_number=None):
         image_response = requests.get(image_url)
 
         alt_attribute = image.get_attribute('alt')
-        # Clean up unecessary filler 
+        # Clean up unnecessary filler 
         # Regular expression to find "May be" and everything before it
         pattern = r'.*May be'
         # Substitute the pattern with an empty string
@@ -287,8 +282,6 @@ class InstagramScraper:
             # Initialize 'picture_contents' as a list with the alt attribute
             post_details['source_url'] = [image_url]
         
-
-        
         if image_number is not None: 
             image_filename = f"{unique_id}_{image_number}.png"
         else:
@@ -306,18 +299,18 @@ class InstagramScraper:
                 portalocker.lock(f, portalocker.LOCK_SH)  # Shared lock for reading
                 try:
                     data = json.load(f)
-                    print(f"Loaded uploaded posts: {data}")
+                    self.logger.debug(f"Loaded uploaded_posts.json: {data}")  
                     return data
                 finally:
                     portalocker.unlock(f)
         else:
-            print(f"{uploaded_posts_file} does not exist.")
+            self.logger.debug(f"{uploaded_posts_file} does not exist.")  
         return {}
 
     def is_post_uploaded(self, post_id):
         uploaded_posts = self.load_uploaded_posts()
         is_uploaded = uploaded_posts.get(post_id, False)
-        print(f"Checking if post {post_id} is uploaded: {is_uploaded}")
+        self.logger.info(f"Checking if post {post_id} has been scraped already: {is_uploaded}") 
         return is_uploaded
     
     def close(self):
@@ -335,9 +328,8 @@ def main():
     # Instantiate the scraper in Non-Headless mode (to be less suspicious)
     # Erstelle und starte den Thread
     
-  # Wartet, bis der Thread beendet ist
-    scraper = InstagramScraper(username, password, element_timeout, False, )
-
+    # Wartet, bis der Thread beendet ist
+    scraper = InstagramScraper(username, password, element_timeout, False)
 
     upload_thread = threading.Thread(target=upload_files)
     upload_thread.start()
@@ -353,11 +345,9 @@ def main():
             profile_urls = [line.strip() for line in file.readlines() if line.strip()]
         finally:
             portalocker.unlock(file)  # Ensure the lock is released
-        
 
     # Scrape each profile
     for url in profile_urls:
-        print(f"Scraping profile: {url}")
         scraper.scrape_profile(url, max_post_count)
 
     # Close the WebDriver

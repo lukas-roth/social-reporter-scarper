@@ -5,25 +5,26 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 import threading 
 import portalocker
+import logging_config
 
 
 stop_event = threading.Event()
 
 def upload_files():
 
-    print("Upload.py gestartet.")
+    logger = logging_config.get_logger('Upload')
+
+    logger.info("Upload.py started.")
     
-    # Arbeitsverzeichnis überprüfen
     current_dir = os.getcwd()
-    print(f'Aktuelles Arbeitsverzeichnis: {current_dir}')
+    logger.debug(f'Current working directory: {current_dir}')
     
-    # Absoluten Pfad zur client_secrets.json angeben
     client_secrets_path = os.path.join(current_dir, 'client_secrets.json')
-    print(f'Pfad zur client_secrets.json: {client_secrets_path}')
+    logger.debug(f'Path to client_secrets.json: {client_secrets_path}')
     
     # Prüfen, ob die client_secrets.json Datei existiert
     if not os.path.exists(client_secrets_path):
-        print(f'client_secrets.json Datei nicht gefunden: {client_secrets_path}')
+        logger.error(f'client_secrets.json file not found! {client_secrets_path}')
         return
     
     # Google Drive authentifizieren
@@ -57,9 +58,9 @@ def upload_files():
             file_path = os.path.join(local_folder, filename)
             if os.path.isfile(file_path):
                 post_id = extract_post_id(filename)
-                print(f"Post_id: {post_id}")
+                logger.debug(f"Post_id: {post_id}")  
                 if upload_manager.is_post_uploaded(post_id):
-                    print(f'{filename} wurde bereits hochgeladen und wird übersprungen.')
+                    logger.info(f'{filename} has already been uploaded and will be skipped.') 
                     safe_delete(file_path)
                     continue
                 else:
@@ -68,7 +69,7 @@ def upload_files():
                         file_drive.SetContentFile(file_path)
                         file_drive.Upload()
                         del file_drive
-                        print(f'{filename} hochgeladen.')
+                        logger.debug(f'{filename} uploaded.')
                         safe_delete(file_path)
                         
                         # Check if all parts of the post are uploaded
@@ -76,21 +77,22 @@ def upload_files():
                         if not post_files:
                             upload_manager.save_uploaded_post(post_id)
                     except Exception as e:
-                        print(f"Datei konnte nich hochgeladen werden!: {e}")
-    print("Upload.py beendet.")
+                        logger.error(f"File could not be uploaded!: {e}")
+    logger.info("Upload.py done.")
 
 def safe_delete(file_path, attempts=10, delay=5):
     """Attempt to delete a file with retries and delays between attempts."""
+    logger = logging_config.get_logger('Uploader')
     for attempt in range(attempts):
         try:
             os.remove(file_path)
-            print(f'{file_path} wurde aus dem lokalen Ordner gelöscht.')
+            logger.debug(f'{file_path} has been deleted from the local folder.')
             break
         except Exception as e:
-            print(f"{file_path} konnte nicht gelöscht werden!: {e}")
+            logger.warning(f"{file_path} could not be deleted!: {e}")
             time.sleep(delay)  # Wait before retrying
     else:
-        print(f"Failed to delete {file_path} after {attempts} attempts.")
+        logger.error(f"Failed to delete {file_path} after {attempts} attempts.")
 
 def extract_post_id(filename):
     return filename.split('.')[0][:11]
@@ -101,6 +103,7 @@ class UploadManager:
     def __init__(self):
         current_dir = os.getcwd()
         self.uploaded_posts_file_path = os.path.join(current_dir, 'uploaded_posts.json')
+        self.logger = logging_config.get_logger('Uploader')
 
     def load_uploaded_posts(self):
         if os.path.exists(self.uploaded_posts_file_path):
@@ -108,18 +111,18 @@ class UploadManager:
                 portalocker.lock(f, portalocker.LOCK_SH)  # Shared lock for reading
                 try:
                     data = json.load(f)
-                    print(f"Loaded uploaded posts: {data}")
+                    self.logger.debug(f"Loaded uploaded posts: {data}")
                     return data
                 finally:
                     portalocker.unlock(f)
         else:
-            print(f"{self.uploaded_posts_file_path} does not exist.")
+            self.logger.debug(f"{self.uploaded_posts_file_path} does not exist.")
         return {}
 
     def is_post_uploaded(self, post_id):
         uploaded_posts = self.load_uploaded_posts()
         is_uploaded = uploaded_posts.get(post_id, False)
-        print(f"Checking if post {post_id} is uploaded: {is_uploaded}")
+        self.logger.debug(f"Checking if post {post_id} is uploaded: {is_uploaded}")
         return is_uploaded
 
     def save_uploaded_post(self, post_id):
@@ -131,7 +134,7 @@ class UploadManager:
                 f.seek(0)
                 f.truncate()  # Clear the file contents before writing
                 json.dump(uploaded_posts, f)
-                print(f"Post {post_id} marked as uploaded.")
+                self.logger.info(f"Post {post_id} marked as uploaded.")
             finally:
                 portalocker.unlock(f)
 
