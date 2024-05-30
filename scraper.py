@@ -141,7 +141,7 @@ class InstagramScraper:
                     try:
                         self.logger.debug('Checking if article element is present...')  
                         current_post = WebDriverWait(self.driver, self.element_timeout).until(
-                            EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"]]'))
+                            EC.presence_of_element_located((By.XPATH, '//article[.//textarea[@placeholder="Add a comment…"] or .//span[text()="Comments on this post have been limited."]]'))
                         ) 
                     except Exception as e:
                         self.logger.debug(f"No article element found!")  
@@ -154,14 +154,15 @@ class InstagramScraper:
                             self.logger.debug(f"<a> element not found!")  
 
                     # Check if there is a button with the label "Next" 
-                    try:
-                        if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
-                            isCarousel = True
-                            self.logger.debug(f"Carousel post found.")  
-                    except Exception as e:
-                        self.logger.debug(f"No carousel post found.") 
+                    if current_post:
+                        try:
+                            if current_post.find_element(By.XPATH, './/button[@aria-label="Next"]'):
+                                isCarousel = True
+                                self.logger.debug(f"Carousel post found.")  
+                        except Exception as e:
+                            self.logger.debug(f"No carousel post found.") 
 
-                    self.scrape_post(current_post, unique_id, index, isCarousel, post_details)
+                        self.scrape_post(current_post, unique_id, index, isCarousel, post_details)
                 else:
                     self.logger.debug(f"Already scraped post: {unique_id}.")  
                 try:
@@ -186,7 +187,6 @@ class InstagramScraper:
         self.logger.info(f'Done with scraping {profile}.')
         return True
         
-
     def scrape_post(self, post, unique_id, index, isCarousel, post_details):
         
         image_found = False
@@ -252,7 +252,10 @@ class InstagramScraper:
                 caption = WebDriverWait(post, self.element_timeout).until(
                     EC.visibility_of_element_located((By.XPATH, '//h1[@class="_ap3a _aaco _aacu _aacx _aad7 _aade"]'))
                 ).text
-                post_details['caption'] = caption
+                if caption:
+                    post_details['caption'] = caption
+                else: 
+                    post_details['caption'] = ''
                 self.logger.debug(f"Post {index} Caption: {caption[:15]}")  
             except Exception as e:
                 self.logger.warning(f"Post {index} Caption not found! {str(e)}") 
@@ -262,12 +265,15 @@ class InstagramScraper:
             try:
                 likes = WebDriverWait(post, self.element_timeout).until(
                     EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'likes')]/span[contains(@class, 'xdj266r')]"))
-                ).text
+                ).text.replace(',', '')
                 post_details['likes'] = int(likes)
                 self.logger.info(f"Post {index}, Likes: {likes}")  
             except Exception as e:
                 self.logger.warning(f"Post {index} Likes not found! {e}")  
                 post_details['likes'] = None
+
+            # Get comments
+            post_details['comments'] = self.scrape_comments(post, caption)
 
             target_folder = './scraped data'
             json_filename = f"{unique_id}.json"
@@ -310,6 +316,42 @@ class InstagramScraper:
         with open(image_file_path, 'wb') as f:
             f.write(image_response.content)
 
+    def scrape_comments(self, post, caption):
+        try:
+            # Find the parent div containing the comments
+            parent_div = WebDriverWait(post, self.element_timeout).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.x9f619.xjbqb8w.x78zum5.x168nmei.x13lgxp2.x5pf9jr.xo71vjh.x1uhb9sk.x1plvlek.xryxfnj.x1c4vz4f.x2lah0s.xdt5ytf.xqjyukv.x1qjc9v5.x1oa3qoh.x1nhvcw1"))
+            )
+            
+            # Find all comment elements within the parent div
+            comments_divs = post.find_elements(By.XPATH, ".//li[contains(@class, '_a9zj')]")
+            
+            comments = []
+            for comment_div in comments_divs:
+
+                comment = comment_div.text
+                text, likes = self.extract_comment_data(comment)
+                comment = {"text": text, "likes": likes}
+                if text not in caption:
+                    comments.append(comment)
+            
+            return comments
+    
+        except Exception as e:
+            self.logger.debug(f'An error occured scraping the comments!: {e}')
+            return []
+    
+    def extract_comment_data(self,comment):
+        # Regex to extract text content (emoji or text between newlines)
+        text_match = re.search(r'\n(.*?)\n', comment)
+        comment_text = text_match.group(1) if text_match else ''
+        
+        # Regex to extract the number of likes
+        likes_match = re.search(r'(\d+)\s+likes', comment)
+        comment_likes = int(likes_match.group(1)) if likes_match else 2  # Default to 2 if no likes found
+        
+        return comment_text, comment_likes
+
     def load_file_data(self, file):
         if os.path.exists(file):
             with open(file, 'r') as f:
@@ -336,7 +378,6 @@ class InstagramScraper:
                 self.logger.info(f"Post {post_id} marked for skipping.")
             finally:
                 portalocker.unlock(f)
-
 
     def is_post_uploaded(self, post_id):
         uploaded_posts = self.load_file_data('uploaded_posts.json')
