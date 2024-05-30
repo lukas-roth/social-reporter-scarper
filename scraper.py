@@ -93,10 +93,10 @@ class InstagramScraper:
         login_button.click()
         self.human_sleep(6, 10)
 
-    def scrape_profile(self, profile_url, max_post_count=0):
+    def scrape_profile(self, profile_url):
         """Scrape up to `max_post_count` posts from a specific profile URL."""
         profile = urlparse(profile_url).path.strip('/').split('/')[0]
-        self.logger.info(f'Trying to scrape at most {max_post_count} posts for {profile}.')
+        self.logger.info(f'Trying to scrape posts for {profile}.')
 
         self.driver.get(profile_url)
         self.scroll_page() 
@@ -120,11 +120,20 @@ class InstagramScraper:
             post.click()
             self.human_sleep(1, 3)
             
-            for index in range(max_post_count):
+            index = 0
+            
+            #for index in range(max_post_count):
+            while True:
                 unique_id = self.driver.current_url.split('/')[-2]
-                self.logger.debug(f"Found post_id: {unique_id}.")  
-                    
-                if not self.is_post_uploaded(unique_id):    
+                self.logger.debug(f"Found post_id: {unique_id}.")
+
+                is_uploaded = self.is_post_uploaded(unique_id)
+
+                if  is_uploaded and self.is_profile_completed(profile):
+                    self.logger.info(f"Already scraped profile {profile}. Now new posts found")
+                    return True
+                
+                if not is_uploaded:  
                     post_details = {'account': profile}
                     post_details['follower_count'] = follower_count 
                     isCarousel = False
@@ -157,18 +166,26 @@ class InstagramScraper:
                     self.logger.debug(f"Already scraped post: {unique_id}.")  
                 try:
                     buttons = self.driver.find_elements(By.CLASS_NAME, "_abl-")
+                    next_button_found = False
                     for button in buttons:
                         if button.accessible_name == "Next":
                             self.logger.info("Moving to next post.")  
+                            index += 1
                             button.click()
+                            next_button_found = True
                             break
                     self.human_sleep(1, 2)
+                    if not next_button_found:
+                        raise Exception("No next button found on profile post")
                 except Exception as e:
-                    self.logger.debug(f"Can't move to next post!")  
+                    self.logger.debug(f"Can't move to next post!")
+                    self.save_completed_profile(profile)  
                     break
         except Exception as e:
-            self.logger.debug(f"No posts found for profile {profile}!")
+            self.logger.debug(f"No posts found for profile {profile}!: {e}")
         self.logger.info(f'Done with scraping {profile}.')
+        return True
+        
 
     def scrape_post(self, post, unique_id, index, isCarousel, post_details):
         
@@ -213,7 +230,8 @@ class InstagramScraper:
                 except Exception as e:
                     self.logger.warning(f"Couldn't scrape image! {str(e)}")  
         except Exception as e:
-            self.logger.error(f"Problem with image in post {unique_id}! {str(e)}")  
+            self.logger.debug(f"Problem with image in post {unique_id}! {str(e)}")
+            self.mark_post_for_skipping(unique_id)  
 
 
         if image_found:
@@ -292,27 +310,60 @@ class InstagramScraper:
         with open(image_file_path, 'wb') as f:
             f.write(image_response.content)
 
-    def load_uploaded_posts(self):
-        uploaded_posts_file = 'uploaded_posts.json'
-        if os.path.exists(uploaded_posts_file):
-            with open(uploaded_posts_file, 'r') as f:
+    def load_file_data(self, file):
+        if os.path.exists(file):
+            with open(file, 'r') as f:
                 portalocker.lock(f, portalocker.LOCK_SH)  # Shared lock for reading
                 try:
                     data = json.load(f)
-                    self.logger.debug(f"Loaded uploaded_posts.json: {data}")  
+                    self.logger.debug(f"Loaded {file}: {data}")  
                     return data
                 finally:
                     portalocker.unlock(f)
         else:
-            self.logger.debug(f"{uploaded_posts_file} does not exist.")  
+            self.logger.debug(f"{file} does not exist.")  
         return {}
+    
+    def mark_post_for_skipping(self, post_id):
+        uploaded_posts = self.load_file_data('uploaded_posts.json')
+        with open('uploaded_posts.json', 'w+') as f:  # Open file in read/write mode, create if it doesn't exist
+            portalocker.lock(f, portalocker.LOCK_EX)  # Exclusive lock for writing
+            try:
+                uploaded_posts[post_id] = True
+                f.seek(0)
+                f.truncate()  # Clear the file contents before writing
+                json.dump(uploaded_posts, f)
+                self.logger.info(f"Post {post_id} marked for skipping.")
+            finally:
+                portalocker.unlock(f)
+
 
     def is_post_uploaded(self, post_id):
-        uploaded_posts = self.load_uploaded_posts()
+        uploaded_posts = self.load_file_data('uploaded_posts.json')
         is_uploaded = uploaded_posts.get(post_id, False)
-        self.logger.info(f"Checking if post {post_id} has been scraped already: {is_uploaded}") 
+        self.logger.debug(f"Checking if post {post_id} has been scraped already: {is_uploaded}") 
         return is_uploaded
     
+    def is_profile_completed(self, profile):
+        uploaded_posts = self.load_file_data('scraped_profiles.json')
+        is_completed = uploaded_posts.get(profile, False)
+        self.logger.debug(f"Checking if profile {profile} has been scraped already: {is_completed}") 
+        return is_completed
+    
+    def save_completed_profile(self, profile):
+        completed_profiles = self.load_file_data('scraped_profiles.json')
+        with open('scraped_profiles.json', 'w+') as f:  # Open file in read/write mode, create if it doesn't exist
+            portalocker.lock(f, portalocker.LOCK_EX)  # Exclusive lock for writing
+            try:
+                completed_profiles[profile] = True
+                f.seek(0)
+                f.truncate()  # Clear the file contents before writing
+                json.dump(completed_profiles, f)
+                self.logger.debug(f"Post {profile} marked as completed.")
+            finally:
+                portalocker.unlock(f)
+
+
     def close(self):
         """Quit the WebDriver."""
         self.driver.quit()
@@ -322,7 +373,6 @@ def main():
     load_dotenv()
     username = os.getenv('MY_APP_USERNAME')
     password = os.getenv('MY_APP_PASSWORD')
-    max_post_count = int(os.getenv('MAX_POSTS_PER_PAGE'))
     element_timeout = int(os.getenv('ELEMENT_TIMEOUT'))
 
     # Instantiate the scraper in Non-Headless mode (to be less suspicious)
@@ -348,7 +398,7 @@ def main():
 
     # Scrape each profile
     for url in profile_urls:
-        scraper.scrape_profile(url, max_post_count)
+        scraper.scrape_profile(url)
 
     # Close the WebDriver
     scraper.close()
