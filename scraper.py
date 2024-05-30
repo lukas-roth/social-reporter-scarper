@@ -180,7 +180,7 @@ class InstagramScraper:
                         raise Exception("No next button found on profile post")
                 except Exception as e:
                     self.logger.debug(f"Can't move to next post! {e}")
-                    if "No next button found on profile post" in e:
+                    if "No next button found on profile post" in str(e):
                         self.save_completed_profile(profile)  
                     break
         except Exception as e:
