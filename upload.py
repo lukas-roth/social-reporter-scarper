@@ -51,7 +51,13 @@ def upload_files():
         folder_id = folder['id']
     local_folder = 'scraped data'
 
+    # Call the function to count uploaded files
+    uploaded_counts = count_uploaded_files(drive, folder_id)
+    logger.info(f"PNG files uploaded: {uploaded_counts['png_count']}")
+    logger.info(f"JSON files uploaded: {uploaded_counts['json_count']}")
+
     upload_manager = UploadManager()
+
 
     while not stop_event.is_set() or os.listdir(local_folder):
         for filename in os.listdir(local_folder):
@@ -97,6 +103,20 @@ def safe_delete(file_path, attempts=10, delay=5):
 def extract_post_id(filename):
     return filename.split('.')[0][:11]
 
+def count_uploaded_files(drive, folder_id):
+        try:
+            query = f"'{folder_id}' in parents and trashed=false"
+            file_list = drive.ListFile({'q': query}).GetList()
+            
+            png_count = sum(1 for file in file_list if file['mimeType'] == 'image/jpeg')
+            json_count = sum(1 for file in file_list if file['mimeType'] == 'application/json')
+            
+            return {'png_count': png_count, 'json_count': json_count}
+        except Exception as e:
+            logger = logging_config.get_logger('Uploader')
+            logger.error(f"An error occurred while counting files: {e}")
+            return {'png_count': 0, 'json_count': 0}
+
 
 class UploadManager:
 
@@ -137,6 +157,9 @@ class UploadManager:
                 self.logger.info(f"Post {post_id} marked as uploaded.")
             finally:
                 portalocker.unlock(f)
+
+    
+
 
 
 
